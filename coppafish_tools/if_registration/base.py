@@ -3,6 +3,7 @@ import nd2
 import numpy as np
 import napari
 from tqdm import tqdm
+from itertools import product
 from coppafish import Notebook
 from coppafish.register.base import find_shift_array, huber_regression
 from coppafish.register.preprocessing import custom_shift, split_3d_image
@@ -14,107 +15,91 @@ from skimage.io import imsave
 from typing import Tuple
 
 
-def extract_raw(raw_dir: str, output_dir: str, if_round_name: str, use_channels: list, num_rotations: int = 0,
-                overlap: float = 0.1):
+def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use_channels: list):
     """
     Extract images from ND2 file and save them as .npy files without any filtering
     Args:
-        raw_dir: (Str) The directory of the raw data as an ND2 file
-        output_dir: (Str) The directory where the images are saved. This should be a folder that is created beforehand.
-        if_round_name: (str) Name of the IF round. Images will be saved as if_round_name_t_{tile}c_{channel}.npy
+        nb: (Notebook) Notebook of the initial experiment
+        read_dir: (Str) The directory of the raw data as an ND2 file
+        save_dir: (Str) The directory where the images are saved. This should be a folder that is created beforehand.
         use_tiles: (list) List of tiles to use
         use_channels: (list) List of channels to use
-        num_rotations: (int) Number of rotations to apply to the images (default = 0) rotations are applied in the
-            order of axes (1, 2) i.e. y and x axes
-        overlap: expected overlap between tiles
 
     """
     # Check if directories exist
-    assert os.path.isfile(raw_dir), f"Raw data file {raw_dir} does not exist"
-    assert os.path.isdir(output_dir), f"Output directory {output_dir} does not exist"
+    assert os.path.isfile(read_dir), f"Raw data file {read_dir} does not exist"
+    assert os.path.isdir(save_dir), f"Save directory {save_dir} does not exist"
+
+    # Get NPY and ND2 indices
+    tilepos_yx, tilepos_yx_nd2 = nb.basic_info.tilepos_yx, nb.basic_info.tilepos_yx_nd2
+    nd2_indices = [get_nd2_tile_ind(t, tilepos_yx_nd2, tilepos_yx) for t in range(nb.basic_info.n_tiles)]
+    # get n_rotations
+    num_rotations = nb.get_config()['filter']['num_rotations']
 
     # Load ND2 file
-    with nd2.ND2File(raw_dir) as f:
-        nd2_file = f.to_dask()
-        n_tiles = f.sizes['P']
-        n_channels = f.sizes['C']
-        tile_sz = f.sizes['X']
-        pixel_size_xy = f.metadata.channels[0].volume.axesCalibration[0]
-
-        xy_pos = np.array([f.experiment[0].parameters.points[i].stagePositionUm[:2]
-                           for i in range(n_tiles)])
-        xy_pos = (xy_pos - np.min(xy_pos, 0)) / pixel_size_xy
-
-    tilepos_yx_nd2, tilepos_yx = get_tilepos(xy_pos=xy_pos, tile_sz=tile_sz, expected_overlap=overlap)
+    with open(read_dir, 'rb') as f:
+        nd2_file = nd2.ND2Reader(f)
 
     # Loop through tiles and channels
-    for channel in tqdm(use_channels, desc='Extracting channel'):
-
-        channel_dir = os.path.join(output_dir, f'channel_{channel}')
-        os.makedirs(channel_dir, exist_ok=True)
-
-        for tile in tqdm(range(n_tiles), desc="Extracting tile"):
-            tile_nd2 = get_nd2_tile_ind(tile, tile_pos_yx_nd2=tilepos_yx_nd2, tile_pos_yx_npy=tilepos_yx)
-
-            # Load image (as z,y,x)
-            image = np.array(nd2_file[tile_nd2, :, channel])
-            image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
-            image = image.astype(np.uint16)
-            # Save image
-            _y, _x = tilepos_yx_nd2[tile_nd2]
-            imsave(os.path.join(channel_dir, f"{_x}_{_y}.tif"), image)
-
-
-def extract_seq_dapi(path, output_dir):
-    """
-    Function to convert DAPI images from sequencing to tif files for zetastitcher.
-    If the final shape is non-rectangular, this function will create empty black tiles.
-
-    Args:
-        path: path to Notebook
-        output_dir: Directory where to save the DAPI files
-    """
-
-    # Load notebook
-    nb = Notebook(config_file=path)
-    config = nb.get_config()
-
-    anchor_dask = load_dask(nb.file_names, nb.basic_info, r=7)
-
-    for i in tqdm(nb.basic_info.use_tiles):
-
-        image = load_image(nb.file_names, nb.basic_info, t=i, c=0, round_dask_array=anchor_dask)
-        image = np.swapaxes(image, -1, 0)
-
-        # image = np.rot90(image, k=config['extract']['num_rotations'], axes=(1, 2))
-
+    for t, c in tqdm(product(use_tiles, use_channels), desc="Extracting raw images"):
+        # load image
+        image = np.array(nd2_file[nd2_indices[t], :, c])
+        image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
+        image = image.astype(np.uint16)
         # Save image
-        _y, _x = nb.basic_info.tilepos_yx[i]
-        imsave(os.path.join(output_dir, f"{_x}_{_y}.tif"), image)
+        np.save(os.path.join(save_dir, f"t{t}c{c}.npy"), image)
 
-    # Finding everything possible coordinates in the bounding rectangle
-    ymax, xmax = np.max(nb.basic_info.tilepos_yx, axis=0)
-    all_pos = list()
-    for y in range(ymax+1):
-        for x in range(xmax+1):
-            all_pos.append((y, x))
 
-    tilepos = list(map(tuple, nb.basic_info.tilepos_yx))
-
-    if len(all_pos) != len(tilepos):
-
-        # Finding missing tiles
-        missing_pos = list()
-        for p in all_pos:
-            if p not in tilepos:
-                missing_pos.append(p)
-
-        print(f'Sequencing image was not rectangular, padding the image with {len(missing_pos)} black tiles')
-
-        im_shape = (len(nb.basic_info.use_z), nb.basic_info.tile_sz, nb.basic_info.tile_sz)
-
-        for p in missing_pos:
-            imsave(os.path.join(output_dir, f"{p[1]}_{p[0]}.tif"), np.zeros(im_shape))
+# def extract_seq_dapi(path, output_dir):
+#     """
+#     Function to convert DAPI images from sequencing to tif files for zetastitcher.
+#     If the final shape is non-rectangular, this function will create empty black tiles.
+#
+#     Args:
+#         path: path to Notebook
+#         output_dir: Directory where to save the DAPI files
+#     """
+#
+#     # Load notebook
+#     nb = Notebook(config_file=path)
+#     config = nb.get_config()
+#
+#     anchor_dask = load_dask(nb.file_names, nb.basic_info, r=7)
+#
+#     for i in tqdm(nb.basic_info.use_tiles):
+#
+#         image = load_image(nb.file_names, nb.basic_info, t=i, c=0, round_dask_array=anchor_dask)
+#         image = np.swapaxes(image, -1, 0)
+#
+#         # image = np.rot90(image, k=config['extract']['num_rotations'], axes=(1, 2))
+#
+#         # Save image
+#         _y, _x = nb.basic_info.tilepos_yx[i]
+#         imsave(os.path.join(output_dir, f"{_x}_{_y}.tif"), image)
+#
+#     # Finding everything possible coordinates in the bounding rectangle
+#     ymax, xmax = np.max(nb.basic_info.tilepos_yx, axis=0)
+#     all_pos = list()
+#     for y in range(ymax+1):
+#         for x in range(xmax+1):
+#             all_pos.append((y, x))
+#
+#     tilepos = list(map(tuple, nb.basic_info.tilepos_yx))
+#
+#     if len(all_pos) != len(tilepos):
+#
+#         # Finding missing tiles
+#         missing_pos = list()
+#         for p in all_pos:
+#             if p not in tilepos:
+#                 missing_pos.append(p)
+#
+#         print(f'Sequencing image was not rectangular, padding the image with {len(missing_pos)} black tiles')
+#
+#         im_shape = (len(nb.basic_info.use_z), nb.basic_info.tile_sz, nb.basic_info.tile_sz)
+#
+#         for p in missing_pos:
+#             imsave(os.path.join(output_dir, f"{p[1]}_{p[0]}.tif"), np.zeros(im_shape))
 
 
 # nb = Notebook('/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/output/notebook.npz')
