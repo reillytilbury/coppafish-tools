@@ -37,7 +37,7 @@ def extract_raw(raw_dir: str, output_dir: str, if_round_name: str, use_channels:
     with nd2.ND2File(raw_dir) as f:
         nd2_file = f.to_dask()
         n_tiles = f.sizes['P']
-        n_chanels = f.sizes['C']
+        n_channels = f.sizes['C']
         tile_sz = f.sizes['X']
         pixel_size_xy = f.metadata.channels[0].volume.axesCalibration[0]
 

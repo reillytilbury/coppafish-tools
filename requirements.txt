@@ -1,0 +1,8 @@
+setuptools~=65.5.1
+nd2~=0.8.0
+numpy~=1.24.4
+napari~=0.4.17
+tqdm~=4.66.1
+coppafish>=0.2.0
+scipy~=1.10.1
+scikit-image~=0.21.0
