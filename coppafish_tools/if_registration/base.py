@@ -37,8 +37,8 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     num_rotations = nb.get_config()['filter']['num_rotations']
 
     # Load ND2 file
-    with open(read_dir, 'rb') as f:
-        nd2_file = nd2.ND2Reader(f)
+    with nd2.ND2File(read_dir) as f:
+        nd2_file = f.asarray()
 
     # Loop through tiles and channels
     for t, c in tqdm(product(use_tiles, use_channels), desc="Extracting raw images"):
