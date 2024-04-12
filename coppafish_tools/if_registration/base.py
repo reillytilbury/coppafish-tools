@@ -38,7 +38,7 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
 
     # Load ND2 file
     with nd2.ND2File(read_dir) as f:
-        nd2_file = f.asarray()
+        nd2_file = f.to_dask()
 
     # Loop through tiles and channels
     for t, c in tqdm(product(use_tiles, use_channels), desc="Extracting raw images"):
