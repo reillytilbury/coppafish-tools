@@ -41,7 +41,8 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
         nd2_file = f.to_dask()
 
     # Loop through tiles and channels
-    for t, c in tqdm(product(use_tiles, use_channels), desc="Extracting raw images"):
+    for t, c in tqdm(product(use_tiles, use_channels), desc="Extracting raw images",
+                     total=len(use_tiles) * len(use_channels)):
         # load image
         image = np.array(nd2_file[nd2_indices[t], :, c])
         image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
