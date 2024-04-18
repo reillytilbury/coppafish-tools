@@ -8,8 +8,7 @@ from coppafish import Notebook
 from coppafish.register.base import find_shift_array, huber_regression
 from coppafish.register.preprocessing import custom_shift, split_3d_image
 from coppafish.utils.nd2 import get_nd2_tile_ind, get_metadata
-from coppafish.utils.raw import load_image, load_dask
-from coppafish.setup.tile_details import get_tilepos
+from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
 from skimage.io import imsave
 from typing import Tuple
@@ -28,7 +27,10 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     """
     # Check if directories exist
     assert os.path.isfile(read_dir), f"Raw data file {read_dir} does not exist"
-    assert os.path.isdir(save_dir), f"Save directory {save_dir} does not exist"
+    save_dirs = [save_dir, os.path.join(save_dir, "if_dapi"), os.path.join(save_dir, "seq_dapi")]
+    for d in save_dirs:
+        if not os.path.isdir(d):
+            os.makedirs(d)
 
     # Get NPY and ND2 indices
     tilepos_yx, tilepos_yx_nd2 = nb.basic_info.tilepos_yx, nb.basic_info.tilepos_yx_nd2
@@ -48,7 +50,15 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
         image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
         image = image.astype(np.uint16)
         # Save image
-        np.save(os.path.join(save_dir, f"t{t}c{c}.npy"), image)
+        np.save(os.path.join(save_dir, "if_dapi", f"t{t}c{c}.npy"), image)
+        # Now load in and save the sequencing dapi
+        raw_path = nb.file_names.tile_unfiltered[t][nb.basic_info.anchor_round][nb.basic_info.dapi_channel]
+        image_raw = tiles_io._load_image(raw_path, nb.extract.file_type)
+        version = [int(i) for i in nb.extract.software_version.split('.')]
+        # apply rotation for versions less than 0.11.0
+        if not (version[0] >= 1 or version[1] >= 11):
+            image_raw = np.rot90(image_raw, k=num_rotations, axes=(1, 2))
+        np.save(os.path.join(save_dir, f"seq_dapi", f"t{t}c{c}.npy"), image_raw)
 
 
 # def extract_seq_dapi(path, output_dir):
