@@ -16,11 +16,11 @@ from typing import Tuple
 
 def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use_channels: list):
     """
-    Extract images from ND2 file and save them as .npy files without any filtering
+    Extract images from ND2 file and save them as .tif files without any filtering
     Args:
         nb: (Notebook) Notebook of the initial experiment
         read_dir: (Str) The directory of the raw data as an ND2 file
-        save_dir: (Str) The directory where the images are saved. This should be a folder that is created beforehand.
+        save_dir: (Str) The directory where the images are saved.
         use_tiles: (list) List of tiles to use
         use_channels: (list) List of channels to use
 
