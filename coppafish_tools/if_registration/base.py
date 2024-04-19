@@ -10,7 +10,7 @@ from coppafish.register.preprocessing import custom_shift, split_3d_image
 from coppafish.utils.nd2 import get_nd2_tile_ind, get_metadata
 from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
-from skimage.io import imsave
+import tifffile
 from typing import Tuple
 
 
@@ -27,7 +27,9 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     """
     # Check if directories exist
     assert os.path.isfile(read_dir), f"Raw data file {read_dir} does not exist"
-    save_dirs = [save_dir, os.path.join(save_dir, "if_dapi"), os.path.join(save_dir, "seq_dapi")]
+    save_dirs = [save_dir]
+    save_dirs += [os.path.join(save_dir, "if", f"channel_{c}") for c in use_channels]
+    save_dirs += [os.path.join(save_dir, "seq", f"channel_{c}") for c in use_channels]
     for d in save_dirs:
         if not os.path.isdir(d):
             os.makedirs(d)
@@ -49,78 +51,17 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
         image = np.array(nd2_file[nd2_indices[t], :, c])
         image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
         image = image.astype(np.uint16)
-        # Save image
-        np.save(os.path.join(save_dir, "if_dapi", f"t{t}c{c}.npy"), image)
-        # Now load in and save the sequencing dapi
-        raw_path = nb.file_names.tile_unfiltered[t][nb.basic_info.anchor_round][nb.basic_info.dapi_channel]
+        # Save image in the format x_y.tif
+        y, x = tilepos_yx[t]
+        tifffile.imwrite(os.path.join(save_dirs[0], "if", f"channel_{c}", f"{x}_{y}.tif"), image)
+        # Now load in the already extracted sequencing images
+        raw_path = nb.file_names.tile_unfiltered[t][nb.basic_info.anchor_round][c]
         image_raw = tiles_io._load_image(raw_path, nb.extract.file_type)
         version = [int(i) for i in nb.extract.software_version.split('.')]
         # apply rotation for versions less than 0.11.0
         if not (version[0] >= 1 or version[1] >= 11):
             image_raw = np.rot90(image_raw, k=num_rotations, axes=(1, 2))
-        np.save(os.path.join(save_dir, f"seq_dapi", f"t{t}c{c}.npy"), image_raw)
-
-
-# def extract_seq_dapi(path, output_dir):
-#     """
-#     Function to convert DAPI images from sequencing to tif files for zetastitcher.
-#     If the final shape is non-rectangular, this function will create empty black tiles.
-#
-#     Args:
-#         path: path to Notebook
-#         output_dir: Directory where to save the DAPI files
-#     """
-#
-#     # Load notebook
-#     nb = Notebook(config_file=path)
-#     config = nb.get_config()
-#
-#     anchor_dask = load_dask(nb.file_names, nb.basic_info, r=7)
-#
-#     for i in tqdm(nb.basic_info.use_tiles):
-#
-#         image = load_image(nb.file_names, nb.basic_info, t=i, c=0, round_dask_array=anchor_dask)
-#         image = np.swapaxes(image, -1, 0)
-#
-#         # image = np.rot90(image, k=config['extract']['num_rotations'], axes=(1, 2))
-#
-#         # Save image
-#         _y, _x = nb.basic_info.tilepos_yx[i]
-#         imsave(os.path.join(output_dir, f"{_x}_{_y}.tif"), image)
-#
-#     # Finding everything possible coordinates in the bounding rectangle
-#     ymax, xmax = np.max(nb.basic_info.tilepos_yx, axis=0)
-#     all_pos = list()
-#     for y in range(ymax+1):
-#         for x in range(xmax+1):
-#             all_pos.append((y, x))
-#
-#     tilepos = list(map(tuple, nb.basic_info.tilepos_yx))
-#
-#     if len(all_pos) != len(tilepos):
-#
-#         # Finding missing tiles
-#         missing_pos = list()
-#         for p in all_pos:
-#             if p not in tilepos:
-#                 missing_pos.append(p)
-#
-#         print(f'Sequencing image was not rectangular, padding the image with {len(missing_pos)} black tiles')
-#
-#         im_shape = (len(nb.basic_info.use_z), nb.basic_info.tile_sz, nb.basic_info.tile_sz)
-#
-#         for p in missing_pos:
-#             imsave(os.path.join(output_dir, f"{p[1]}_{p[0]}.tif"), np.zeros(im_shape))
-
-
-# nb = Notebook('/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/output/notebook.npz')
-# config = nb.get_config()
-# if_image_dir = ['/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_0c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_1c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_2c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_3c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_4c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_5c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_6c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_7c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_8c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_9c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_10c_0.npy', '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/IF_reg/IF_round.nd2_t_11c_0.npy']
-# anchor_image_dir = [nb.file_names.tile[t][nb.basic_info.anchor_round][nb.basic_info.dapi_channel] for t in nb.basic_info.use_tiles]
-# reg_data_dir = '/home/servers/zaru/ISS/Izzie/Nami-230907_hTau_73g_NN_ADLR+HR_anti/output/registration_data.pkl'
-# if_image dir will not be available from the notebook so create a list of paths to the IF images and make sure order
-# is correct
-# reg_data = align_if_round(config, anchor_image_dir, if_image_dir, reg_data_dir)
+        tifffile.imwrite(os.path.join(save_dirs[0], "seq", f"channel_{c}", f"{x}_{y}.tif"), image_raw)
 
 
 # Function to load and save images from the ND2 file for IF rounds
@@ -256,7 +197,6 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
     # Now apply the transform to the IF image
 
     if_dapi_aligned_initial = affine_transform(if_dapi, transform_initial, order=0)
-
 
     v = napari.Viewer()
     v.add_image(anchor_dapi, name='anchor_dapi', colormap='red', blending='additive')
