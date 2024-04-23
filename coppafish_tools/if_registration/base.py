@@ -25,6 +25,8 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
         use_channels: (list) List of channels to use
 
     """
+    if type(use_channels) == int:
+        use_channels = [use_channels]
     # Check if directories exist
     assert os.path.isfile(read_dir), f"Raw data file {read_dir} does not exist"
     save_dirs = [save_dir]
@@ -64,77 +66,8 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
         tifffile.imwrite(os.path.join(save_dirs[0], "seq", f"channel_{c}", f"{x}_{y}.tif"), image_raw)
 
 
-# Function to load and save images from the ND2 file for IF rounds
-def manual_stitch(tile_dir: list, output_dir: str, use_tiles: list, reg_data: dict, tile_origin: np.ndarray,
-                  tile_sz: list):
-    """
-    Load in images as npy files, apply registration, stitch and save
-    Args:
-        tile_dir: (list of len n_tiles_use) List of paths to images
-        output_dir: (str) Path to save stitched image
-        use_tiles: (list of len n_tiles_use) List of tiles to use (npy tile index)
-        reg_data: (dict) Dictionary of registration data for each tile
-        tile_origin: (np.ndarray) Array of tile origins in yxz coordinates in npy order
-        tile_sz: tile size in yxz order
-    """
-    # convert tile origin axis 1 order to zyx instead of yxz
-    tile_sz = np.roll(np.array(tile_sz), shift=1)
-    tile_origin = np.roll(tile_origin, shift=1, axis=1)
-    # load in the intra tile shifts from the registration data
-    shift = np.zeros_like(tile_origin) * np.nan
-    shift[use_tiles] = np.array([reg_data[tile]['transform'][0, :, 3] for tile in use_tiles])
-    # Convert tile origin to be relative to the minimum tile origin
-    tile_origin = tile_origin - np.nanmin(tile_origin, axis=0)
-    # Size of the stitched image is the maximum tile origin + tile size + 1
-    stitched_image_size = (np.nanmax(tile_origin, axis=0).astype(int) +
-                           np.array(tile_sz) +
-                           1)
-    # Create empty array to store stitched image
-    stitched_image = np.zeros(stitched_image_size, dtype=np.uint16)
-
-    # Loop through tiles
-    for t in tqdm.tqdm(range(len(use_tiles)), desc="Stitching IF images"):
-        # Load image
-        image = np.load(tile_dir[t])
-        # Apply registration
-        image = affine_transform(image, reg_data[use_tiles[t]]['transform'][0, :3, :3])
-        # blc means bottom left corner, trc means top right corner. Sometimes, these will be negative or greater than
-        # the size of the stitched image. In these cases, we clip the values to be within the range of the stitched
-        # image and only take the part of the image that is within the stitched image
-        blc_nominal = (tile_origin[use_tiles[t]] - shift[use_tiles[t]]).astype(int)
-        trc_nominal = blc_nominal + np.array(tile_sz).astype(int)
-        blc = np.clip(blc_nominal, a_min=0, a_max=None)
-        trc = np.clip(trc_nominal, a_min=None, a_max=stitched_image_size)
-        # Now crop image. To do this, we need to compare blc_nominal and trc_nominal to blc and trc
-        offset_blc = blc - blc_nominal
-        offset_trc = trc_nominal - trc
-        image = image[offset_blc[0]:tile_sz[0]-offset_trc[0],
-                      offset_blc[1]:tile_sz[1]-offset_trc[1],
-                      offset_blc[2]:tile_sz[2]-offset_trc[2]]
-
-        # Stitch image
-        stitched_image[blc[0]:trc[0], blc[1]:trc[1], blc[2]:trc[2]] = image
-
-    # Switch back to yxz order
-    stitched_image = np.moveaxis(stitched_image, 0, 2)
-    # Save stitched image
-    np.save(output_dir, stitched_image)
-
-
-# with open('/home/reilly/ExternalServers/SH/Christina Maat/ISS Data + Analysis/E-2308-005_WT_6mo/11SEP23_2T_rerun/'
-#         'output/IF_overlay/reg_data_correct.pkl',
-#         'rb') as f:
-#     reg_data = pickle.load(f)
-# nb = Notebook('/home/reilly/ExternalServers/SH/Christina Maat/ISS Data + Analysis/E-2308-005_WT_6mo/11SEP23_2T_rerun'
-#               '/output/notebook.npz')
-# tile_dir = ['/home/reilly/local_datasets/christina_if_overlay/tiles/IFr_488-Homer1_594-Iba1P2y12_647-Cd206_t_5c_0.npy',
-#             '/home/reilly/local_datasets/christina_if_overlay/tiles/IFr_488-Homer1_594-Iba1P2y12_647-Cd206_t_6c_0.npy']
-# output_dir = '/home/reilly/local_datasets/christina_if_overlay/dapi_stitched.npy'
-# tile_origin = nb.stitch.tile_origin
-# use_tiles = [5, 6]
-# tile_sz = [2304, 2304, 64]
-# manual_stitch(tile_dir, output_dir, use_tiles, reg_data, tile_origin, tile_sz)
-def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: dict) -> Tuple[np.ndarray, np.ndarray]:
+def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: dict = None,
+                downsample_factor_yx: int = 1) -> np.ndarray:
     """
     Register IF image to anchor image
     :param anchor_dapi: Stitched large anchor image (nz, ny, nx)
@@ -143,15 +76,16 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
         * subvolume_size: np.ndarray, size of subvolumes in each dimension (size_z, size_y, size_x)
         * n_subvolumes: np.ndarray, number of subvolumes in each dimension (n_z, n_y, n_x)
         * r_threshold: float, threshold for correlation coefficient
+    :param downsample_factor_yx: int, downsample factor for y and x dimensions
+    :param save_dir: str, directory to save the transform
 
-    :return: reg_data: dict, registration data containing:
-        * global_shift: np.ndarray, global shift between anchor and IF images
-        * global_angle: float, global angle between anchor and IF images
-        * local_affine_transforms: dict, local affine transforms for each synthetic tile
+    :return:
+        transform: np.ndarray, affine transform matrix
     """
     # Steps are as follows:
     # 1. Manual selection of reference points for shift and rotation correction
     # 2. Local correction for z shifts
+
     if anchor_dapi.shape != if_dapi.shape:
       z_box_anchor, y_box_anchor, x_box_anchor = np.array(anchor_dapi.shape)
       z_box_if, y_box_if, x_box_if = np.array(if_dapi.shape)
@@ -162,15 +96,23 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
       anchor_dapi, if_dapi = anchor_dapi_full, if_dapi_full
       del anchor_dapi_full, if_dapi_full
 
+    if reg_parameters is None:
+        z_size, y_size, x_size = 16, 512, 512
+        nz, ny, nx = np.array(anchor_dapi.shape) // np.array([z_size, y_size, x_size])
+        nz, ny, nx = nz + 1, ny + 1, nx + 1
+        reg_parameters = {'subvolume_size': np.array([z_size, y_size, x_size]),
+                          'n_subvolumes': np.array([nz, ny, nx]),
+                          'r_threshold': 0.8}
+
     # 1. Global correction for shift and rotation
     anchor_dapi_2d = np.max(anchor_dapi, axis=0)
     if_dapi_2d = np.max(if_dapi, axis=0)
     v = napari.Viewer()
     v.add_image(anchor_dapi_2d, name='anchor_dapi', colormap='red', blending='additive')
     v.add_image(if_dapi_2d, name='if_dapi', colormap='green', blending='additive')
-    v.add_layer(napari.layers.Points(data=np.array([]), name='anchor_dapi_points', size=5, edge_color=np.zeros((3, 4)),
+    v.add_layer(napari.layers.Points(data=np.array([]), name='anchor_dapi_points', size=1, edge_color=np.zeros((3, 4)),
                                      face_color='white'))
-    v.add_layer(napari.layers.Points(data=np.array([]), name='if_dapi_points', size=5, edge_color=np.zeros((3, 4)),
+    v.add_layer(napari.layers.Points(data=np.array([]), name='if_dapi_points', size=1, edge_color=np.zeros((3, 4)),
                                      face_color='white'))
     v.show(block=True)
 
@@ -206,10 +148,10 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
     # 2. Local correction for shifts
     # First, split the images into subvolumes
     z_size, y_size, x_size = reg_parameters['subvolume_size']
-    z_n, y_n, x_n = reg_parameters['n_subvolumes']
-    anchor_subvolumes, position = split_3d_image(anchor_dapi, z_subvolumes=z_n, y_subvolumes=y_n, x_subvolumes=x_n,
-                                       z_box=z_size, y_box=y_size, x_box=x_size)
-    if_subvolumes, _ = split_3d_image(if_dapi_aligned_initial, z_subvolumes=z_n, y_subvolumes=y_n, x_subvolumes=x_n,
+    nz, ny, nx = reg_parameters['n_subvolumes']
+    anchor_subvolumes, position = split_3d_image(anchor_dapi, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
+                                                 z_box=z_size, y_box=y_size, x_box=x_size)
+    if_subvolumes, _ = split_3d_image(if_dapi_aligned_initial, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
                                       z_box=z_size, y_box=y_size, x_box=x_size)
     # Now loop through subvolumes and calculate the shifts
     shift, corr = find_shift_array(anchor_subvolumes, if_subvolumes, position,
@@ -218,21 +160,28 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
     # Use these shifts to compute a global affine transform
     transform_3d_correction = huber_regression(shift, position, predict_shift=False)
     # Apply the transform to the IF image
-    if_dapi_aligned = affine_transform(if_dapi_aligned_initial, transform_3d_correction, order=0)
-    transform = (np.vstack((transform_initial, [0, 0, 0, 1])) @ np.vstack((transform_3d_correction, [0, 0, 0, 1])))[:3, :]
+    transform = (np.vstack((transform_initial, [0, 0, 0, 1])) @
+                 np.vstack((transform_3d_correction, [0, 0, 0, 1])))[:3, :]
+    # upsample shift
+    transform[1:, -1] *= downsample_factor_yx
 
-    return if_dapi_aligned, transform
+    return transform
 
 
-def apply_transform(image: np.ndarray, transform: np.ndarray) -> np.ndarray:
+def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     """
-    Apply a 3d affine transform to an image
-    :param image: z y x image to be transformed
-    :param transform: 3 x 4 transform in z y x
-    :return: image_transformed: np.ndaraay transformed image
+    Apply the transform to an image and save the result
+    :param im_dir: str, directory of the image to apply the transform to (should be a tiff file)
+    :param transform: np.ndarray, affine transform matrix
+    :param save_dir: str, directory to save the transformed image
     """
-    image = affine_transform(image, transform, order=5)
-    return image
+    # Load the image
+    image = tifffile.imread(im_dir)
+    # Apply the transform
+    transformed_image = affine_transform(image, transform, order=0)
+    # Save the transformed image
+    save_dir = os.path.join(save_dir, os.path.basename(im_dir))
+    tifffile.imwrite(save_dir, transformed_image)
 
 
 def generate_random_image(spot_dims: list, spot_spread: int, n_spots: int, image_size: list,
@@ -277,43 +226,3 @@ def gaussian_kernel(size: list, sigma: float) -> np.ndarray:
             for x in range(size[2]):
                 kernel[z, y, x] = np.exp(-((z-size[0]/2)**2 + (y-size[1]/2)**2 + (x-size[2]/2)**2)/(2*sigma**2))
     return kernel
-
-
-# reg_parameters = {'subvolume_size': np.array([16, 512, 512]),
-#                     'n_subvolumes': np.array([3, 5, 5]),
-#                     'r_threshold': 0.8}
-# anchor_dapi = generate_random_image([21, 51, 51], 10, 500, [30, 1500, 1500],
-#                                     seed=51)
-# # Sort out a transform which our algorithm should be able to find
-# angle = 2 * np.pi / 12
-# rotation_matrix = np.array([[1, 0, 0],
-#                             [0, np.cos(angle), -np.sin(angle)],
-#                             [0, np.sin(angle), np.cos(angle)]])
-# # we want to rotate around the centre of the image
-# offset = (np.eye(3) - rotation_matrix) @ np.array([0, anchor_dapi.shape[1] // 2, anchor_dapi.shape[2] // 2])
-# shift = np.array([0, 10, 20])
-# if_dapi = affine_transform(anchor_dapi, rotation_matrix, offset=offset, order=0)
-# # Now add some 3d shifts
-# z_shift = np.arange(-10, 11)
-# num_z_shifts = len(z_shift)
-# x_chunk = anchor_dapi.shape[2] // num_z_shifts
-# for i, z in enumerate(z_shift):
-#     begin_x = i * x_chunk
-#     end_x = (i + 1) * x_chunk
-#     if_dapi[:, :, begin_x:end_x] = custom_shift(if_dapi[:, :, begin_x:end_x],
-#                                                         offset=np.array([z, 0, 0]).astype(int))
-# # Now run the registration!
-# if_dapi_aligned, transform = register_if(anchor_dapi, if_dapi, reg_parameters)
-# # Now check the transform
-# viewer = napari.Viewer()
-# viewer.add_image(anchor_dapi, name='anchor_dapi', colormap='red', blending='additive')
-# viewer.add_image(if_dapi_aligned, name='if_dapi', colormap='green', blending='additive')
-# napari.run()
-# reg_parameters = {'subvolume_size': np.array([16, 512, 512]),
-#                     'n_subvolumes': np.array([3, 5, 5]),
-#                     'r_threshold': 0.8}
-# anchor_dapi = np.load('')
-# if_dapi = np.load('')
-# if_dapi_aligned, transform = register_if(anchor_dapi, if_dapi, reg_parameters)
-# np.save('', transform)
-# np.save('', if_dapi_aligned)
