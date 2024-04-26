@@ -97,7 +97,7 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
       del anchor_dapi_full, if_dapi_full
 
     if reg_parameters is None:
-        z_size, y_size, x_size = 16, 512, 512
+        z_size, y_size, x_size = 16, 1024, 1024
         nz, ny, nx = np.array(anchor_dapi.shape) // np.array([z_size, y_size, x_size])
         nz, ny, nx = nz + 1, ny + 1, nx + 1
         reg_parameters = {'subvolume_size': np.array([z_size, y_size, x_size]),
@@ -180,7 +180,6 @@ def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     # Apply the transform
     transformed_image = affine_transform(image, transform, order=0)
     # Save the transformed image
-    save_dir = os.path.join(save_dir, os.path.basename(im_dir))
     tifffile.imwrite(save_dir, transformed_image)
 
 
