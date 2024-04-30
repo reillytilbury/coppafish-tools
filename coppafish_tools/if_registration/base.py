@@ -41,29 +41,41 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     nd2_indices = [get_nd2_tile_ind(t, tilepos_yx_nd2, tilepos_yx) for t in range(nb.basic_info.n_tiles)]
     # get n_rotations
     num_rotations = nb.get_config()['filter']['num_rotations']
+    c_dapi = nb.basic_info.dapi_channel
 
     # Load ND2 file
     with nd2.ND2File(read_dir) as f:
         nd2_file = f.to_dask()
 
-    # Loop through tiles and channels
-    for t, c in tqdm(product(use_tiles, use_channels), desc="Extracting raw images",
-                     total=len(use_tiles) * len(use_channels)):
-        # load image
-        image = np.array(nd2_file[nd2_indices[t], :, c])
-        image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
-        image = image.astype(np.uint16)
-        # Save image in the format x_y.tif
+    # 1. collect extracted dapi from seq images
+    for t in tqdm(use_tiles, desc="Extracting DAPI from seq images", total=len(use_tiles)):
         y, x = tilepos_yx[t]
-        tifffile.imwrite(os.path.join(save_dirs[0], "if", f"channel_{c}", f"{x}_{y}.tif"), image)
-        # Now load in the already extracted sequencing images
-        raw_path = nb.file_names.tile_unfiltered[t][nb.basic_info.anchor_round][c]
+        save_path = os.path.join(save_dirs[0], "seq", f"channel_{c_dapi}", f"{x}_{y}.tif")
+        if os.path.isfile(save_path):
+            continue
+        # load raw image
+        raw_path = nb.file_names.tile_unfiltered[t][nb.basic_info.anchor_round][c_dapi]
         image_raw = tiles_io._load_image(raw_path, nb.extract.file_type)
-        version = [int(i) for i in nb.extract.software_version.split('.')]
         # apply rotation for versions less than 0.11.0
+        version = [int(i) for i in nb.extract.software_version.split('.')]
         if not (version[0] >= 1 or version[1] >= 11):
             image_raw = np.rot90(image_raw, k=num_rotations, axes=(1, 2))
-        tifffile.imwrite(os.path.join(save_dirs[0], "seq", f"channel_{c}", f"{x}_{y}.tif"), image_raw)
+        # Save image in the format x_y.tif
+        tifffile.imwrite(save_path, image_raw)
+
+    # 2. extract all relevant channels from the IF images
+    for t in tqdm(use_tiles, desc="Extracting IF images", total=len(use_tiles)):
+        for c in use_channels:
+            y, x = tilepos_yx[t]
+            save_path = os.path.join(save_dirs[0], "if", f"channel_{c}", f"{x}_{y}.tif")
+            if os.path.isfile(save_path):
+                continue
+            # load image
+            image = np.array(nd2_file[nd2_indices[t], :, c])
+            image = np.rot90(image, k=num_rotations, axes=(1, 2))[1:]
+            image = image.astype(np.uint16)
+            # Save image in the format x_y.tif
+            tifffile.imwrite(save_path, image)
 
 
 def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: dict = None,
@@ -180,6 +192,7 @@ def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     # Apply the transform
     transformed_image = affine_transform(image, transform, order=0)
     # Save the transformed image
+    save_dir = os.path.join(save_dir, os.path.basename(im_dir))
     tifffile.imwrite(save_dir, transformed_image)
 
 
