@@ -3,15 +3,13 @@ import nd2
 import numpy as np
 import napari
 from tqdm import tqdm
-from itertools import product
 from coppafish import Notebook
 from coppafish.register.base import find_shift_array, huber_regression
-from coppafish.register.preprocessing import custom_shift, split_3d_image
-from coppafish.utils.nd2 import get_nd2_tile_ind, get_metadata
+from coppafish.register.preprocessing import split_3d_image
+from coppafish.utils.nd2 import get_nd2_tile_ind
 from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
 import tifffile
-from typing import Tuple
 
 
 def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use_channels: list):
@@ -31,10 +29,11 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     assert os.path.isfile(read_dir), f"Raw data file {read_dir} does not exist"
     save_dirs = [save_dir]
     save_dirs += [os.path.join(save_dir, "if", f"channel_{c}") for c in use_channels]
-    save_dirs += [os.path.join(save_dir, "seq", f"channel_{c}") for c in use_channels]
+    save_dirs += [os.path.join(save_dir, "seq", f"channel_{nb.basic_info.dapi_channel}")]
     for d in save_dirs:
         if not os.path.isdir(d):
             os.makedirs(d)
+    del save_dirs
 
     # Get NPY and ND2 indices
     tilepos_yx, tilepos_yx_nd2 = nb.basic_info.tilepos_yx, nb.basic_info.tilepos_yx_nd2
@@ -50,7 +49,7 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     # 1. collect extracted dapi from seq images
     for t in tqdm(use_tiles, desc="Extracting DAPI from seq images", total=len(use_tiles)):
         y, x = tilepos_yx[t]
-        save_path = os.path.join(save_dirs[0], "seq", f"channel_{c_dapi}", f"{x}_{y}.tif")
+        save_path = os.path.join(save_dir, "seq", f"channel_{c_dapi}", f"{x}_{y}.tif")
         if os.path.isfile(save_path):
             continue
         # load raw image
@@ -67,7 +66,7 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
     for t in tqdm(use_tiles, desc="Extracting IF images", total=len(use_tiles)):
         for c in use_channels:
             y, x = tilepos_yx[t]
-            save_path = os.path.join(save_dirs[0], "if", f"channel_{c}", f"{x}_{y}.tif")
+            save_path = os.path.join(save_dir, "if", f"channel_{c}", f"{x}_{y}.tif")
             if os.path.isfile(save_path):
                 continue
             # load image
@@ -79,7 +78,7 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
 
 
 def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: dict = None,
-                downsample_factor_yx: int = 1) -> np.ndarray:
+                downsample_factor_yx: int = 4, save_dir: str = None) -> np.ndarray:
     """
     Register IF image to anchor image
     :param anchor_dapi: Stitched large anchor image (nz, ny, nx)
@@ -99,14 +98,14 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
     # 2. Local correction for z shifts
 
     if anchor_dapi.shape != if_dapi.shape:
-      z_box_anchor, y_box_anchor, x_box_anchor = np.array(anchor_dapi.shape)
-      z_box_if, y_box_if, x_box_if = np.array(if_dapi.shape)
-      z_box, y_box, x_box = max(z_box_anchor, z_box_if), max(y_box_anchor, y_box_if), max(x_box_anchor, x_box_if)
-      anchor_dapi_full, if_dapi_full = np.zeros((z_box, y_box, x_box)), np.zeros((z_box, y_box, x_box))
-      anchor_dapi_full[:z_box_anchor, :y_box_anchor, :x_box_anchor] = anchor_dapi
-      if_dapi_full[:z_box_if, :y_box_if, :x_box_if] = if_dapi
-      anchor_dapi, if_dapi = anchor_dapi_full, if_dapi_full
-      del anchor_dapi_full, if_dapi_full
+        z_box_anchor, y_box_anchor, x_box_anchor = np.array(anchor_dapi.shape)
+        z_box_if, y_box_if, x_box_if = np.array(if_dapi.shape)
+        z_box, y_box, x_box = max(z_box_anchor, z_box_if), max(y_box_anchor, y_box_if), max(x_box_anchor, x_box_if)
+        anchor_dapi_full, if_dapi_full = np.zeros((z_box, y_box, x_box)), np.zeros((z_box, y_box, x_box))
+        anchor_dapi_full[:z_box_anchor, :y_box_anchor, :x_box_anchor] = anchor_dapi
+        if_dapi_full[:z_box_if, :y_box_if, :x_box_if] = if_dapi
+        anchor_dapi, if_dapi = anchor_dapi_full, if_dapi_full
+        del anchor_dapi_full, if_dapi_full
 
     if reg_parameters is None:
         z_size, y_size, x_size = 16, 1024, 1024
@@ -176,7 +175,10 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
                  np.vstack((transform_3d_correction, [0, 0, 0, 1])))[:3, :]
     # upsample shift
     transform[1:, -1] *= downsample_factor_yx
-
+    if save_dir is not None:
+        np.save(os.path.join(save_dir, 'transform.npy'), transform)
+    else:
+        print("Transform not saved")
     return transform
 
 
