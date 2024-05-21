@@ -194,6 +194,6 @@ def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     # Apply the transform
     transformed_image = affine_transform(image, transform, order=0)
     # Save the transformed image
-    im_name = os.path.basename(im_dir).split('.')[0] + '_transformed.tif'
+    im_name = os.path.basename(im_dir).split('.')[0] + '_registered.tif'
     save_dir = os.path.join(save_dir, im_name)
     tifffile.imwrite(save_dir, transformed_image)
