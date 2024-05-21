@@ -14,7 +14,6 @@ from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
 
 
-
 def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use_channels: list):
     """
     Extract images from ND2 file and save them as .tif files without any filtering
@@ -225,7 +224,7 @@ def convert_notebook_coords_to_zeta(nb: Notebook, zeta_dir: str):
         :param zeta_dir: The directory containing the stitch.yaml file
     """
     # Load the stitch.yaml file
-    with open(os.path.join(zeta_dir, 'stitch.yaml'), 'r') as f:
+    with open(zeta_dir, 'r') as f:
         stitch = yaml.safe_load(f)
     stitch = stitch['filematrix']
 
