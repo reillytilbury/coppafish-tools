@@ -2,6 +2,9 @@ import os
 import nd2
 import numpy as np
 import napari
+import skimage
+import tifffile
+import yaml
 from tqdm import tqdm
 from coppafish import Notebook
 from coppafish.register.base import find_shift_array, huber_regression
@@ -9,7 +12,7 @@ from coppafish.register.preprocessing import split_3d_image
 from coppafish.utils.nd2 import get_nd2_tile_ind
 from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
-import tifffile
+
 
 
 def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use_channels: list):
@@ -77,25 +80,33 @@ def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use
             tifffile.imwrite(save_path, image)
 
 
-def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: dict = None,
-                downsample_factor_yx: int = 4, save_dir: str = None) -> np.ndarray:
+def register_if(anchor_dapi: np.ndarray,
+                if_dapi: np.ndarray,
+                transform_save_dir: str,
+                reg_parameters: dict = None,
+                downsample_factor_yx: int = 4) -> np.ndarray:
     """
     Register IF image to anchor image
     :param anchor_dapi: Stitched large anchor image (nz, ny, nx)
     :param if_dapi: Stitched large IF image (nz, ny, nx)
+    :param transform_save_dir: str, directory to save the transform as a .npy file
     :param reg_parameters: Dictionary of registration parameters. Keys are:
-        * subvolume_size: np.ndarray, size of subvolumes in each dimension (size_z, size_y, size_x)
-        * n_subvolumes: np.ndarray, number of subvolumes in each dimension (n_z, n_y, n_x)
-        * r_threshold: float, threshold for correlation coefficient
+        * registration_type: str, type of registration to perform (must be 'shift' or 'subvolume')
+        if registration_type is 'shift':
+            No additional parameters are required
+        if registration_type is 'subvolume':
+            * subvolume_size: np.ndarray, size of subvolumes in each dimension (size_z, size_y, size_x)
+            * n_subvolumes: np.ndarray, number of subvolumes in each dimension (n_z, n_y, n_x)
+            * r_threshold: float, threshold for correlation coefficient
     :param downsample_factor_yx: int, downsample factor for y and x dimensions
-    :param save_dir: str, directory to save the transform
+
 
     :return:
         transform: np.ndarray, affine transform matrix
     """
     # Steps are as follows:
     # 1. Manual selection of reference points for shift and rotation correction
-    # 2. Local correction for z shifts
+    # 2. Local correction for z shifts (done as a global shift correction or by subvolume registration)
 
     if anchor_dapi.shape != if_dapi.shape:
         z_box_anchor, y_box_anchor, x_box_anchor = np.array(anchor_dapi.shape)
@@ -111,11 +122,12 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
         z_size, y_size, x_size = 16, 1024, 1024
         nz, ny, nx = np.array(anchor_dapi.shape) // np.array([z_size, y_size, x_size])
         nz, ny, nx = nz + 1, ny + 1, nx + 1
-        reg_parameters = {'subvolume_size': np.array([z_size, y_size, x_size]),
+        reg_parameters = {'registration_type': 'subvolume',  # 'shift' or 'subvolume'
+                          'subvolume_size': np.array([z_size, y_size, x_size]),
                           'n_subvolumes': np.array([nz, ny, nx]),
                           'r_threshold': 0.8}
 
-    # 1. Global correction for shift and rotation
+    # 1. Global correction for shift and rotation using procrustes analysis
     anchor_dapi_2d = np.max(anchor_dapi, axis=0)
     if_dapi_2d = np.max(if_dapi, axis=0)
     v = napari.Viewer()
@@ -148,7 +160,6 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
     print(f"Initial angle is {np.round(angle * 180 / np.pi, 2)} degrees and shift is "
           f"{np.round(transform_initial[:2, 2], 2)}")
     # Now apply the transform to the IF image
-
     if_dapi_aligned_initial = affine_transform(if_dapi, transform_initial, order=0)
 
     v = napari.Viewer()
@@ -157,28 +168,34 @@ def register_if(anchor_dapi: np.ndarray, if_dapi: np.ndarray, reg_parameters: di
     v.show(block=True)
 
     # 2. Local correction for shifts
-    # First, split the images into subvolumes
-    z_size, y_size, x_size = reg_parameters['subvolume_size']
-    nz, ny, nx = reg_parameters['n_subvolumes']
-    anchor_subvolumes, position = split_3d_image(anchor_dapi, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
-                                                 z_box=z_size, y_box=y_size, x_box=x_size)
-    if_subvolumes, _ = split_3d_image(if_dapi_aligned_initial, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
-                                      z_box=z_size, y_box=y_size, x_box=x_size)
-    # Now loop through subvolumes and calculate the shifts
-    shift, corr = find_shift_array(anchor_subvolumes, if_subvolumes, position,
-                                   r_threshold=reg_parameters['r_threshold'])
+    if reg_parameters['registration_type'] == 'shift':
+        # shift needs to be shift taking anchor to if, as the first transform was obtained this way
+        shift = skimage.registration.phase_cross_correlation(reference_image=if_dapi_aligned_initial,
+                                                             moving_image=anchor_dapi)[0]
+        transform_3d_correction = np.eye(3, 4)
+        transform_3d_correction[:, 3] = shift
 
-    # Use these shifts to compute a global affine transform
-    transform_3d_correction = huber_regression(shift, position, predict_shift=False)
-    # Apply the transform to the IF image
+    elif reg_parameters['registration_type'] == 'subvolume':
+        # First, split the images into subvolumes
+        z_size, y_size, x_size = reg_parameters['subvolume_size']
+        nz, ny, nx = reg_parameters['n_subvolumes']
+        anchor_subvolumes, position = split_3d_image(anchor_dapi, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
+                                                     z_box=z_size, y_box=y_size, x_box=x_size)
+        if_subvolumes, _ = split_3d_image(if_dapi_aligned_initial, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
+                                          z_box=z_size, y_box=y_size, x_box=x_size)
+        # Now loop through subvolumes and calculate the shifts
+        shift, corr = find_shift_array(anchor_subvolumes, if_subvolumes, position,
+                                       r_threshold=reg_parameters['r_threshold'])
+
+        # Use these shifts to compute a global affine transform
+        transform_3d_correction = huber_regression(shift, position, predict_shift=False)
+
+    # Now join the initial and 3d correction transforms
     transform = (np.vstack((transform_initial, [0, 0, 0, 1])) @
                  np.vstack((transform_3d_correction, [0, 0, 0, 1])))[:3, :]
-    # upsample shift
+    # up-sample shift in yx
     transform[1:, -1] *= downsample_factor_yx
-    if save_dir is not None:
-        np.save(os.path.join(save_dir, 'transform.npy'), transform)
-    else:
-        print("Transform not saved")
+    np.save(os.path.join(transform_save_dir, 'transform.npy'), transform)
     return transform
 
 
@@ -197,3 +214,45 @@ def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     im_name = os.path.basename(im_dir).split('.')[0] + '_registered.tif'
     save_dir = os.path.join(save_dir, im_name)
     tifffile.imwrite(save_dir, transformed_image)
+
+
+def convert_notebook_coords_to_zeta(nb: Notebook, zeta_dir: str):
+    """
+    Convert notebook coordinates to zetastitcher coordinates using the stitch.yaml file in the zeta_dir. This function
+    does not return anything, but saves the notebook with the new coordinates under the name notebook_zeta.npz.
+
+        :param nb: Notebook with global coords to be converted
+        :param zeta_dir: The directory containing the stitch.yaml file
+    """
+    # Load the stitch.yaml file
+    with open(os.path.join(zeta_dir, 'stitch.yaml'), 'r') as f:
+        stitch = yaml.safe_load(f)
+    stitch = stitch['filematrix']
+
+    # get number of tiles and initialise tile_origins_yxz
+    tilepos_yx, n_tiles = nb.basic_info.tilepos_yx.copy(), len(stitch)
+    assert len(stitch) == len(tilepos_yx), 'Number of tiles in stitch.yaml does not match number of tiles in tilepos_yx'
+    tile_origins_yxz = np.zeros((n_tiles, 3)) # yxz
+    npy_tile_index = np.zeros(n_tiles, dtype=int) # index of each zetastitcher tile in npy tiles format
+
+    # iterate through each tile in stitch.yaml and find the corresponding tile in tilepos_yx
+    for i, tile in enumerate(stitch):
+        # get x, y position of tile
+        x, y = int(tile['X']), int(tile['Y'])
+        # need to find the index of [y, x] in tilepos_yx
+        npy_tile_index[i] = np.where((tilepos_yx == [y, x]).all(axis=1))[0][0]
+
+    # iterate through all tiles in stitch.yaml and populate tile_origins_yxz
+    for i, tile in enumerate(stitch):
+        # get origin of tile
+        origin_i_yxz = np.array([tile['Ys'], tile['Xs'], tile['Zs']])
+        # assign origin to correct index in tile_origins_yxz
+        tile_origins_yxz[npy_tile_index[i]] = origin_i_yxz
+
+    # now replace the tile_origins parameter in the stitch page of the notebook with the new parameter and save the
+    # notebook under the new name notebook_zeta
+    nb.stitch.finalized = False
+    del nb.stitch.tile_origin
+    nb.stitch.tile_origin = tile_origins_yxz
+    new_nb_name = os.path.join(nb.file_names.output_dir, 'notebook_zeta.npz')
+    nb.save(new_nb_name)
