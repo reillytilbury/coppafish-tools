@@ -119,7 +119,7 @@ def register_if(anchor_dapi: np.ndarray,
     if reg_parameters is None:
         z_size, y_size, x_size = 16, 512, 512
         reg_parameters = {'registration_type': 'subvolume',  # 'shift' or 'subvolume'
-                          'subvolume_size': np.array([z_size, y_size, x_size]),
+                          'subvolume_size': [z_size, y_size, x_size],
                           'overlap': 0.1,
                           'r_threshold': 0.8}
 
@@ -166,9 +166,20 @@ def register_if(anchor_dapi: np.ndarray,
         # Now loop through subvolumes and calculate the shifts
         shift, corr = find_shift_array(anchor_subvolumes, if_subvolumes, position,
                                        r_threshold=reg_parameters['r_threshold'])
+        # flatten the position array
+        position = position.reshape(-1, 3)
 
         # Use these shifts to compute a global affine transform
         transform_3d_correction = huber_regression(shift, position, predict_shift=False)
+    else:
+        raise ValueError("Invalid registration type. Must be 'shift' or 'subvolume'")
+
+    # plot the transformed image
+    if_dapi_aligned = affine_transform(if_dapi_aligned_initial, transform_3d_correction, order=0)
+    v = napari.Viewer()
+    v.add_image(anchor_dapi, name='anchor_dapi', colormap='red', blending='additive')
+    v.add_image(if_dapi_aligned, name='if_dapi', colormap='green', blending='additive')
+    v.show(block=True)
 
     # Now compose the initial and 3d correction transforms
     transform = (np.vstack((transform_initial, [0, 0, 0, 1])) @
@@ -274,7 +285,7 @@ def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1
         subvolumes[z, y, x] = image[z_start:z_end, y_start:y_end, x_start:x_end]
         positions[z, y, x] = np.array([z_centre, y_centre, x_centre])
 
-    return subvolumes.reshape(-1, *subvolume_size), positions.reshape(-1, 3)
+    return subvolumes, positions
 
 
 def procrustes_regression(base_points: np.ndarray, target_points: np.ndarray):
