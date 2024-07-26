@@ -8,7 +8,6 @@ import yaml
 from tqdm import tqdm
 from coppafish import Notebook
 from coppafish.register.base import find_shift_array, huber_regression
-from coppafish.register.preprocessing import split_3d_image
 from coppafish.utils.nd2 import get_nd2_tile_ind
 from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
@@ -95,7 +94,7 @@ def register_if(anchor_dapi: np.ndarray,
             No additional parameters are required
         if registration_type is 'subvolume':
             * subvolume_size: np.ndarray, size of subvolumes in each dimension (size_z, size_y, size_x)
-            * n_subvolumes: np.ndarray, number of subvolumes in each dimension (n_z, n_y, n_x)
+            * overlap: float, fraction of overlap between subvolumes: 0 <= overlap < 1
             * r_threshold: float, threshold for correlation coefficient
     :param downsample_factor_yx: int, downsample factor for y and x dimensions
 
@@ -118,12 +117,10 @@ def register_if(anchor_dapi: np.ndarray,
         del anchor_dapi_full, if_dapi_full
 
     if reg_parameters is None:
-        z_size, y_size, x_size = 16, 1024, 1024
-        nz, ny, nx = np.array(anchor_dapi.shape) // np.array([z_size, y_size, x_size])
-        nz, ny, nx = nz + 1, ny + 1, nx + 1
+        z_size, y_size, x_size = 16, 512, 512
         reg_parameters = {'registration_type': 'subvolume',  # 'shift' or 'subvolume'
                           'subvolume_size': np.array([z_size, y_size, x_size]),
-                          'n_subvolumes': np.array([nz, ny, nx]),
+                          'overlap': 0.1,
                           'r_threshold': 0.8}
 
     # 1. Global correction for shift and rotation using procrustes analysis
@@ -177,11 +174,10 @@ def register_if(anchor_dapi: np.ndarray,
     elif reg_parameters['registration_type'] == 'subvolume':
         # First, split the images into subvolumes
         z_size, y_size, x_size = reg_parameters['subvolume_size']
-        nz, ny, nx = reg_parameters['n_subvolumes']
-        anchor_subvolumes, position = split_3d_image(anchor_dapi, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
-                                                     z_box=z_size, y_box=y_size, x_box=x_size)
-        if_subvolumes, _ = split_3d_image(if_dapi_aligned_initial, z_subvolumes=nz, y_subvolumes=ny, x_subvolumes=nx,
-                                          z_box=z_size, y_box=y_size, x_box=x_size)
+        anchor_subvolumes, position = split_3d_image(image=anchor_dapi, subvolume_size=[z_size, y_size, x_size],
+                                                     overlap=reg_parameters['overlap'])
+        if_subvolumes, _ = split_3d_image(image=if_dapi_aligned_initial, subvolume_size=[z_size, y_size, x_size],
+                                          overlap=reg_parameters['overlap'])
         # Now loop through subvolumes and calculate the shifts
         shift, corr = find_shift_array(anchor_subvolumes, if_subvolumes, position,
                                        r_threshold=reg_parameters['r_threshold'])
@@ -255,3 +251,42 @@ def convert_notebook_coords_to_zeta(nb: Notebook, zeta_dir: str):
     nb.stitch.tile_origin = tile_origins_yxz
     new_nb_name = os.path.join(nb.file_names.output_dir, 'notebook_zeta.npz')
     nb.save(new_nb_name)
+
+
+def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1):
+    """
+    Split a 3D image into subvolumes of size given by subvolume_size
+    Args:
+        image: (np.ndarray) 3D image to split (nz, ny, nx)
+        subvolume_size: Size of the subvolumes in each dimension (size_z, size_y, size_x)
+        overlap: (float) Fraction of overlap between subvolumes: 0 <= overlap < 1 (default 0.1)
+
+    Returns:
+        subvolumes: (np.ndarray) List of subvolumes (n_subvolumes, size_z, size_y, size_x)
+        position: (np.ndarray) List of positions of the subvolumes in the original image (n_subvolumes, 3)
+    """
+    assert 0 <= overlap < 1, "Overlap must be between 0 and 1"
+    assert len(subvolume_size) == 3, "Subvolume size must be a list of 3 integers"
+    assert all([type(i) == int for i in subvolume_size]), "Subvolume size must be a list of 3 integers"
+    assert [subvolume_size[i] <= image.shape[i] for i in range(3)], "Subvolume size must be smaller than image size"
+
+    # determine number of subvolumes in each dimension. This crops the image to the nearest multiple of subvolume_size,
+    # after accounting for overlap
+    im_size = np.array(image.shape)
+    n_subvolumes = (im_size // ((1-overlap) * np.array(subvolume_size))).astype(int)
+    # regression will only work if there are more than 1 subvolume in each dimension
+    assert all(n_subvolumes > 1), "Subvolume size too large for image size. Reduce subvolume size or increase overlap"
+
+    # create an array of dimensions (n_subvolumes_z, n_subvolumes_y, n_subvolumes_x, size_z, size_y, size_x)
+    subvol_dims = np.array([n_subvolumes, subvolume_size]).flatten()
+    subvolumes = np.zeros(subvol_dims)
+    positions = np.zeros(np.array([n_subvolumes, 3]))
+    # populate the subvolumes array
+    for z, y, x in tqdm(np.ndindex(n_subvolumes), desc="Splitting image into subvolumes"):
+        z_start, y_start, x_start = (np.array([z, y, x]) * (1-overlap) * np.array(subvolume_size)).astype(int)
+        z_end, y_end, x_end = z_start + subvolume_size[0], y_start + subvolume_size[1], x_start + subvolume_size[2]
+        z_centre, y_centre, x_centre = (z_start + z_end) // 2, (y_start + y_end) // 2, (x_start + x_end) // 2
+        subvolumes[z, y, x] = image[z_start:z_end, y_start:y_end, x_start:x_end]
+        positions[z, y, x] = np.array([z_centre, y_centre, x_centre])
+
+    return subvolumes.reshape(-1, *subvolume_size), positions.reshape(-1, 3)
