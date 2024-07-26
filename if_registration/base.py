@@ -138,23 +138,8 @@ def register_if(anchor_dapi: np.ndarray,
     # Get user input for shift and rotation
     base_points = v.layers[2].data
     target_points = v.layers[3].data
-    assert len(base_points) == len(target_points), "Number of anchor points must equal number of IF points"
-    # Calculate the affine transform
-    base_mean, target_mean = np.mean(base_points, axis=0), np.mean(target_points, axis=0)
-    base_points_centred = base_points - base_mean
-    target_points_centred = target_points - target_mean
-    U, S, Vt = np.linalg.svd(target_points_centred.T @ base_points_centred)
-    R = U @ Vt
-    angle = np.arccos(R[0, 0])
-    shift = target_mean - base_mean
-    # This shift is assuming the affine transform is centred at the centre of mass of the anchor points (base mean), so
-    # we need to correct for this and make our shift relative to (0, 0)
-    shift += (np.eye(2) - R) @ base_mean
-    transform_initial = np.eye(3, 4)
-    transform_initial[1:3, 1:3] = R
-    transform_initial[1:, 3] = shift
-    print(f"Initial angle is {np.round(angle * 180 / np.pi, 2)} degrees and shift is "
-          f"{np.round(transform_initial[:2, 2], 2)}")
+    # Calculate the original orthogonal transform
+    transform_initial = procrustes_regression(base_points, target_points)
     # Now apply the transform to the IF image
     if_dapi_aligned_initial = affine_transform(if_dapi, transform_initial, order=0)
 
@@ -185,7 +170,7 @@ def register_if(anchor_dapi: np.ndarray,
         # Use these shifts to compute a global affine transform
         transform_3d_correction = huber_regression(shift, position, predict_shift=False)
 
-    # Now join the initial and 3d correction transforms
+    # Now compose the initial and 3d correction transforms
     transform = (np.vstack((transform_initial, [0, 0, 0, 1])) @
                  np.vstack((transform_3d_correction, [0, 0, 0, 1])))[:3, :]
     # up-sample shift in yx
@@ -280,9 +265,9 @@ def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1
     # create an array of dimensions (n_subvolumes_z, n_subvolumes_y, n_subvolumes_x, size_z, size_y, size_x)
     subvol_dims = np.array([n_subvolumes, subvolume_size]).flatten()
     subvolumes = np.zeros(subvol_dims)
-    positions = np.zeros(np.array([n_subvolumes, 3]))
+    positions = np.zeros(np.concatenate([n_subvolumes, [3]]))
     # populate the subvolumes array
-    for z, y, x in tqdm(np.ndindex(n_subvolumes), desc="Splitting image into subvolumes"):
+    for z, y, x in tqdm(np.ndindex(tuple(n_subvolumes)), desc="Splitting image into subvolumes"):
         z_start, y_start, x_start = (np.array([z, y, x]) * (1-overlap) * np.array(subvolume_size)).astype(int)
         z_end, y_end, x_end = z_start + subvolume_size[0], y_start + subvolume_size[1], x_start + subvolume_size[2]
         z_centre, y_centre, x_centre = (z_start + z_end) // 2, (y_start + y_end) // 2, (x_start + x_end) // 2
@@ -290,3 +275,40 @@ def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1
         positions[z, y, x] = np.array([z_centre, y_centre, x_centre])
 
     return subvolumes.reshape(-1, *subvolume_size), positions.reshape(-1, 3)
+
+
+def procrustes_regression(base_points: np.ndarray, target_points: np.ndarray):
+    """
+    Perform procrustes analysis to find the affine transform between two sets of points. This will return the best
+    orthogonal transformation between the two sets of points. This is useful for finding the rotation and translation
+    between two sets of points.
+    Args:
+        base_points: n_points x 2 np.ndarray of points to transform
+        target_points: n_points x 2 np.ndarray of points to transform to
+
+    Returns:
+        transform_procrustes: 3x4 np.ndarray, affine transform matrix
+    """
+    assert base_points.shape == target_points.shape, "Base and target points must have the same shape"
+    assert base_points.shape[1] == 2, "Base and target points must be 2D"
+
+    # centre the points
+    base_mean, target_mean = np.mean(base_points, axis=0), np.mean(target_points, axis=0)
+    base_points_centred = base_points - base_mean
+    target_points_centred = target_points - target_mean
+
+    # procrustes analysis uses svd to find optimal rotation
+    U, S, Vt = np.linalg.svd(target_points_centred.T @ base_points_centred)
+    R = U @ Vt
+    angle = np.arccos(R[0, 0])
+    shift = target_mean - base_mean
+    print(f"Initial angle is {np.round(angle * 180 / np.pi, 2)} degrees and shift is {np.round(shift, 2)}")
+
+    # This shift found takes origin at the centre of mass of the anchor points (base mean),
+    # correct for this and make our shift relative to (0, 0)
+    shift += (np.eye(2) - R) @ base_mean
+    # convert our matrix to a 3 x 4 affine transform matrix (as this will be the starting point for 3d registration)
+    transform_procrustes = np.eye(3, 4)
+    transform_procrustes[1:3, 1:3] = R
+    transform_procrustes[1:, 3] = shift
+    return transform_procrustes

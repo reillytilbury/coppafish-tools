@@ -56,3 +56,12 @@ def test_register_if():
     im_base = affine_transform(im_target, affine_transform_true, order=1)
     affine_transform_test = base.register_if(im_base, im_target)
     assert np.allclose(affine_transform_test, affine_transform_true, atol=0.01)
+
+
+def test_split_3d_image():
+    im = np.random.rand(30, 125, 125)
+    subvol_size = [10, 50, 50]
+    overlap = 0.1
+    subvols, position = base.split_3d_image(im, subvol_size, overlap)
+    assert subvols.shape == (12, 10, 50, 50), f"subvols shape: {subvols.shape}"
+    assert position.shape == (12, 3), f"position shape: {position.shape}"
