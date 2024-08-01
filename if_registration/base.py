@@ -60,7 +60,9 @@ def convert_notebook_coords_to_zeta(nb: Notebook, zeta_dir: str):
     # notebook under the new name notebook_zeta
     nb.stitch.finalized = False
     del nb.stitch.tile_origin
-    nb.stitch.tile_origin = tile_origins_zeta
+    tile_origins_zeta_full = np.zeros((nb.basic_info.n_tiles, 3)) * np.nan
+    tile_origins_zeta_full[use_tiles] = tile_origins_zeta
+    nb.stitch.tile_origin = tile_origins_zeta_full
     new_nb_name = os.path.join(nb.file_names.output_dir, 'notebook_zeta.npz')
     nb.save(new_nb_name)
 
