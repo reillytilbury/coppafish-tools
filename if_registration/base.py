@@ -7,7 +7,7 @@ import tifffile
 import yaml
 from tqdm import tqdm
 from coppafish import Notebook
-from coppafish.register.base import find_shift_array, huber_regression
+from .subvol_registration import find_shift_array, huber_regression, procrustes_regression
 from coppafish.utils.nd2 import get_nd2_tile_ind
 from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
@@ -322,38 +322,3 @@ def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1
     return subvolumes, positions
 
 
-def procrustes_regression(base_points: np.ndarray, target_points: np.ndarray):
-    """
-    Perform procrustes analysis to find the affine transform between two sets of points. This will return the best
-    orthogonal transformation between the two sets of points. This is useful for finding the rotation and translation
-    between two sets of points.
-    Args:
-        base_points: n_points x 2 np.ndarray of points to transform
-        target_points: n_points x 2 np.ndarray of points to transform to
-
-    Returns:
-        transform_procrustes: 3x4 np.ndarray, affine transform matrix
-    """
-    assert base_points.shape == target_points.shape, "Base and target points must have the same shape"
-    assert base_points.shape[1] == 2, "Base and target points must be 2D"
-
-    # centre the points
-    base_mean, target_mean = np.mean(base_points, axis=0), np.mean(target_points, axis=0)
-    base_points_centred = base_points - base_mean
-    target_points_centred = target_points - target_mean
-
-    # procrustes analysis uses svd to find optimal rotation
-    U, S, Vt = np.linalg.svd(target_points_centred.T @ base_points_centred)
-    R = U @ Vt
-    angle = np.arccos(R[0, 0])
-    shift = target_mean - base_mean
-    print(f"Initial angle is {np.round(angle * 180 / np.pi, 2)} degrees and shift is {np.round(shift, 2)}")
-
-    # This shift found takes origin at the centre of mass of the anchor points (base mean),
-    # correct for this and make our shift relative to (0, 0)
-    shift += (np.eye(2) - R) @ base_mean
-    # convert our matrix to a 3 x 4 affine transform matrix (as this will be the starting point for 3d registration)
-    transform_procrustes = np.eye(3, 4)
-    transform_procrustes[1:3, 1:3] = R
-    transform_procrustes[1:, 3] = shift
-    return transform_procrustes
