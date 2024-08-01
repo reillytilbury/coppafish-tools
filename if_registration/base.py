@@ -13,6 +13,80 @@ from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
 
 
+def convert_notebook_coords_to_zeta(nb: Notebook, zeta_dir: str):
+    """
+    Convert notebook coordinates to zetastitcher coordinates using the stitch.yaml file in the zeta_dir. This function
+    does not return anything, but saves the notebook with the new coordinates under the name notebook_zeta.npz.
+
+        :param nb: Notebook with global coords to be converted
+        :param zeta_dir: The directory containing the stitch.yaml file
+    """
+    # Load the stitch.yaml file
+    with open(zeta_dir, 'r') as f:
+        stitch = yaml.safe_load(f)
+    stitch = stitch['filematrix']
+
+    # get number of tiles and initialise tile_origins_yxz
+    use_tiles = nb.basic_info.use_tiles
+    n_tiles_coppa, n_tiles_zeta = len(use_tiles), len(stitch)
+    assert n_tiles_coppa == n_tiles_zeta, (f'Number of tiles in stitch.yaml ({n_tiles_zeta}) does not match number of '
+                                           f'tiles used in the notebook ({n_tiles_coppa})')
+    n_tiles_use = len(use_tiles)
+    tilepos_yx_coppa = nb.basic_info.tilepos_yx.copy()[use_tiles] - np.min(nb.basic_info.tilepos_yx[use_tiles], axis=0)
+    tilepos_yx_zeta = np.array([[tile['Y'], tile['X']] for tile in stitch])
+    tilepos_yx_zeta -= np.min(tilepos_yx_zeta, axis=0)
+    assert set(map(tuple, tilepos_yx_coppa)) == set(map(tuple, tilepos_yx_zeta)), (f"Tile positions do not match. "
+                                                                                   f"\n Tile positions in notebook: \n {string_tile_format(tilepos_yx_coppa)},  "
+                                                                                   f"\n tile positions in stitch.yaml: \n {tilepos_yx_zeta}")
+    # now define a map between these two sets of tile positions, which will tell us how to get from one to the other
+    coppa_tile_index = np.zeros(n_tiles_use, dtype=int) # index of each zetastitcher tile in coppa tiles format (npy)
+
+    # iterate through each tile in stitch.yaml and find the corresponding coppafish npy tile index in tilepos_yx
+    for i, coord in enumerate(tilepos_yx_zeta):
+        # get x, y position of tile
+        y, x = coord
+        # need to find the index of [y, x] in tilepos_yx
+        coppa_tile_index[i] = np.where((tilepos_yx_coppa == [y, x]).all(axis=1))[0][0]
+
+    # iterate through all tiles in stitch.yaml and populate tile_origins_zeta
+    tile_origins_zeta = np.zeros((n_tiles_use, 3))  # new tile origins in zetastitcher format
+    for i, tile in enumerate(stitch):
+        # get origin of tile
+        origin_i_yxz = np.array([tile['Ys'], tile['Xs'], tile['Zs']])
+        # assign origin to correct index in tile_origins_yxz
+        tile_origins_zeta[coppa_tile_index[i]] = origin_i_yxz
+
+    # now replace the tile_origins parameter in the stitch page of the notebook with the new parameter and save the
+    # notebook under the new name notebook_zeta
+    nb.stitch.finalized = False
+    del nb.stitch.tile_origin
+    nb.stitch.tile_origin = tile_origins_zeta
+    new_nb_name = os.path.join(nb.file_names.output_dir, 'notebook_zeta.npz')
+    nb.save(new_nb_name)
+
+
+def string_tile_format(tilepos_yx: np.ndarray) -> str:
+    """
+    Return the tile format as a string.
+    Args:
+        tilepos_yx: n_tiles_use x 2 np.ndarray of tile positions in yx format
+    Returns:
+        tile_string: str, string representation of the tile format
+    """
+    tile_string = ""
+    max_y, max_x = np.max(tilepos_yx, axis=0)
+    for y in range(max_y + 1):
+        row = ""
+        for x in range(max_x + 1):
+            tile_exists = len(np.where((tilepos_yx == [y, x]).all(axis=1))[0]) > 0
+            if tile_exists:
+                row += "T"
+            else:
+                row += " "
+        tile_string += row + "\n"
+    return tile_string
+
+
 def extract_raw(nb: Notebook, read_dir: str, save_dir: str, use_tiles: list, use_channels: list):
     """
     Extract images from ND2 file and save them as .tif files without any filtering
@@ -205,48 +279,6 @@ def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     im_name = os.path.basename(im_dir).split('.')[0] + '_registered.tif'
     save_dir = os.path.join(save_dir, im_name)
     tifffile.imwrite(save_dir, transformed_image)
-
-
-def convert_notebook_coords_to_zeta(nb: Notebook, zeta_dir: str):
-    """
-    Convert notebook coordinates to zetastitcher coordinates using the stitch.yaml file in the zeta_dir. This function
-    does not return anything, but saves the notebook with the new coordinates under the name notebook_zeta.npz.
-
-        :param nb: Notebook with global coords to be converted
-        :param zeta_dir: The directory containing the stitch.yaml file
-    """
-    # Load the stitch.yaml file
-    with open(zeta_dir, 'r') as f:
-        stitch = yaml.safe_load(f)
-    stitch = stitch['filematrix']
-
-    # get number of tiles and initialise tile_origins_yxz
-    tilepos_yx, n_tiles = nb.basic_info.tilepos_yx.copy(), len(stitch)
-    assert len(stitch) == len(tilepos_yx), 'Number of tiles in stitch.yaml does not match number of tiles in tilepos_yx'
-    tile_origins_yxz = np.zeros((n_tiles, 3)) # yxz
-    npy_tile_index = np.zeros(n_tiles, dtype=int) # index of each zetastitcher tile in npy tiles format
-
-    # iterate through each tile in stitch.yaml and find the corresponding tile in tilepos_yx
-    for i, tile in enumerate(stitch):
-        # get x, y position of tile
-        x, y = int(tile['X']), int(tile['Y'])
-        # need to find the index of [y, x] in tilepos_yx
-        npy_tile_index[i] = np.where((tilepos_yx == [y, x]).all(axis=1))[0][0]
-
-    # iterate through all tiles in stitch.yaml and populate tile_origins_yxz
-    for i, tile in enumerate(stitch):
-        # get origin of tile
-        origin_i_yxz = np.array([tile['Ys'], tile['Xs'], tile['Zs']])
-        # assign origin to correct index in tile_origins_yxz
-        tile_origins_yxz[npy_tile_index[i]] = origin_i_yxz
-
-    # now replace the tile_origins parameter in the stitch page of the notebook with the new parameter and save the
-    # notebook under the new name notebook_zeta
-    nb.stitch.finalized = False
-    del nb.stitch.tile_origin
-    nb.stitch.tile_origin = tile_origins_yxz
-    new_nb_name = os.path.join(nb.file_names.output_dir, 'notebook_zeta.npz')
-    nb.save(new_nb_name)
 
 
 def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1):

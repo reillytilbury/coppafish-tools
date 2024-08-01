@@ -65,3 +65,22 @@ def test_split_3d_image():
     subvols, position = base.split_3d_image(im, subvol_size, overlap)
     assert subvols.shape == (12, 10, 50, 50), f"subvols shape: {subvols.shape}"
     assert position.shape == (12, 3), f"position shape: {position.shape}"
+
+
+def test_procrustes_regression():
+    """
+    Test the procrustes regression function by givving it a known transformation and checking the output
+    """
+    shift = np.array([1, 4])
+    base_points = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1]])
+    # rotate the points by 90 degrees
+    target_points = np.array([[0, 0], [0, 1], [1, 0], [0, -1], [-1, 0]])
+    # shift the points by 1, 4
+    target_points += shift
+    # run the procrustes regression
+    transform = base.procrustes_regression(base_points, target_points)
+    # since this function returns a 3 x 4 matrix, we need to extract the rotation and shift
+    transform = np.vstack((transform[:2, :2], transform[:2, 3]))
+    # check the transform
+    assert np.allclose(transform, np.array([[0, -1], [1, 0], shift]), atol=0.01)
+
