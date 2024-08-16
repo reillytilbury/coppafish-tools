@@ -5,8 +5,8 @@ import napari
 import skimage
 import tifffile
 import yaml
-import subvol_registration, preprocessing
 
+from . import subvol_registration, preprocessing
 from tqdm import tqdm
 from coppafish import Notebook
 from coppafish.utils.nd2 import get_nd2_tile_ind
@@ -239,7 +239,7 @@ def register_if(anchor_dapi: np.ndarray,
         anchor_subvolumes, position = preprocessing.split_image(image=anchor_dapi,
                                                                 subvolume_size=[z_size, y_size, x_size],
                                                                 overlap=reg_parameters['overlap'])
-        if_subvolumes, _ = preprocessing.split_3d_image(image=if_dapi_aligned_initial,
+        if_subvolumes, _ = preprocessing.split_image(image=if_dapi_aligned_initial,
                                                         subvolume_size=[z_size, y_size, x_size],
                                                         overlap=reg_parameters['overlap'])
         # Now loop through subvolumes and calculate the shifts
