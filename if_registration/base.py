@@ -5,9 +5,10 @@ import napari
 import skimage
 import tifffile
 import yaml
+import subvol_registration, preprocessing
+
 from tqdm import tqdm
 from coppafish import Notebook
-from .subvol_registration import find_shift_array, huber_regression, procrustes_regression
 from coppafish.utils.nd2 import get_nd2_tile_ind
 from coppafish.utils import tiles_io
 from scipy.ndimage import affine_transform
@@ -215,7 +216,7 @@ def register_if(anchor_dapi: np.ndarray,
     base_points = v.layers[2].data
     target_points = v.layers[3].data
     # Calculate the original orthogonal transform
-    transform_initial = procrustes_regression(base_points, target_points)
+    transform_initial = subvol_registration.procrustes_regression(base_points, target_points)
     # Now apply the transform to the IF image
     if_dapi_aligned_initial = affine_transform(if_dapi, transform_initial, order=0)
 
@@ -235,18 +236,22 @@ def register_if(anchor_dapi: np.ndarray,
     elif reg_parameters['registration_type'] == 'subvolume':
         # First, split the images into subvolumes
         z_size, y_size, x_size = reg_parameters['subvolume_size']
-        anchor_subvolumes, position = split_3d_image(image=anchor_dapi, subvolume_size=[z_size, y_size, x_size],
-                                                     overlap=reg_parameters['overlap'])
-        if_subvolumes, _ = split_3d_image(image=if_dapi_aligned_initial, subvolume_size=[z_size, y_size, x_size],
-                                          overlap=reg_parameters['overlap'])
+        anchor_subvolumes, position = preprocessing.split_image(image=anchor_dapi,
+                                                                subvolume_size=[z_size, y_size, x_size],
+                                                                overlap=reg_parameters['overlap'])
+        if_subvolumes, _ = preprocessing.split_3d_image(image=if_dapi_aligned_initial,
+                                                        subvolume_size=[z_size, y_size, x_size],
+                                                        overlap=reg_parameters['overlap'])
         # Now loop through subvolumes and calculate the shifts
-        shift, corr = find_shift_array(anchor_subvolumes, if_subvolumes, position,
-                                       r_threshold=reg_parameters['r_threshold'])
+        shift, corr = subvol_registration.find_shift_array(anchor_subvolumes,
+                                                           if_subvolumes,
+                                                           position,
+                                                           r_threshold=reg_parameters['r_threshold'])
         # flatten the position array
         position = position.reshape(-1, 3)
 
         # Use these shifts to compute a global affine transform
-        transform_3d_correction = huber_regression(shift, position, predict_shift=False)
+        transform_3d_correction = subvol_registration.huber_regression(shift, position, predict_shift=False)
     else:
         raise ValueError("Invalid registration type. Must be 'shift' or 'subvolume'")
 
@@ -281,44 +286,4 @@ def apply_transform(im_dir: str, transform: np.ndarray, save_dir: str):
     im_name = os.path.basename(im_dir).split('.')[0] + '_registered.tif'
     save_dir = os.path.join(save_dir, im_name)
     tifffile.imwrite(save_dir, transformed_image)
-
-
-def split_3d_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1):
-    """
-    Split a 3D image into subvolumes of size given by subvolume_size
-    Args:
-        image: (np.ndarray) 3D image to split (nz, ny, nx)
-        subvolume_size: Size of the subvolumes in each dimension (size_z, size_y, size_x)
-        overlap: (float) Fraction of overlap between subvolumes: 0 <= overlap < 1 (default 0.1)
-
-    Returns:
-        subvolumes: (np.ndarray) List of subvolumes (n_subvolumes, size_z, size_y, size_x)
-        position: (np.ndarray) List of positions of the subvolumes in the original image (n_subvolumes, 3)
-    """
-    assert 0 <= overlap < 1, "Overlap must be between 0 and 1"
-    assert len(subvolume_size) == 3, "Subvolume size must be a list of 3 integers"
-    assert all([type(i) == int for i in subvolume_size]), "Subvolume size must be a list of 3 integers"
-    assert [subvolume_size[i] <= image.shape[i] for i in range(3)], "Subvolume size must be smaller than image size"
-
-    # determine number of subvolumes in each dimension. This crops the image to the nearest multiple of subvolume_size,
-    # after accounting for overlap
-    im_size = np.array(image.shape)
-    n_subvolumes = (im_size // ((1-overlap) * np.array(subvolume_size))).astype(int)
-    # regression will only work if there are more than 1 subvolume in each dimension
-    assert all(n_subvolumes > 1), "Subvolume size too large for image size. Reduce subvolume size or increase overlap"
-
-    # create an array of dimensions (n_subvolumes_z, n_subvolumes_y, n_subvolumes_x, size_z, size_y, size_x)
-    subvol_dims = np.array([n_subvolumes, subvolume_size]).flatten()
-    subvolumes = np.zeros(subvol_dims)
-    positions = np.zeros(np.concatenate([n_subvolumes, [3]]))
-    # populate the subvolumes array
-    for z, y, x in tqdm(np.ndindex(tuple(n_subvolumes)), desc="Splitting image into subvolumes"):
-        z_start, y_start, x_start = (np.array([z, y, x]) * (1-overlap) * np.array(subvolume_size)).astype(int)
-        z_end, y_end, x_end = z_start + subvolume_size[0], y_start + subvolume_size[1], x_start + subvolume_size[2]
-        z_centre, y_centre, x_centre = (z_start + z_end) // 2, (y_start + y_end) // 2, (x_start + x_end) // 2
-        subvolumes[z, y, x] = image[z_start:z_end, y_start:y_end, x_start:x_end]
-        positions[z, y, x] = np.array([z_centre, y_centre, x_centre])
-
-    return subvolumes, positions
-
 

@@ -1,6 +1,7 @@
 import numpy as np
 import skimage
 from scipy import signal
+from tqdm import tqdm
 
 
 def custom_shift(array: np.ndarray, offset: np.ndarray, constant_values=0):
@@ -29,6 +30,45 @@ def custom_shift(array: np.ndarray, offset: np.ndarray, constant_values=0):
         new_array[(slice(None),) * axis + (slice(0, o) if o >= 0 else slice(o, None),)] = constant_values
 
     return new_array
+
+
+def split_image(image: np.ndarray, subvolume_size: list, overlap: float = 0.1):
+    """
+    Split a 3D image into subvolumes of size given by subvolume_size
+    Args:
+        image: (np.ndarray) 3D image to split (nz, ny, nx)
+        subvolume_size: Size of the subvolumes in each dimension (size_z, size_y, size_x)
+        overlap: (float) Fraction of overlap between subvolumes: 0 <= overlap < 1 (default 0.1)
+
+    Returns:
+        subvolumes: (np.ndarray) List of subvolumes (n_subvolumes, size_z, size_y, size_x)
+        position: (np.ndarray) List of positions of the subvolumes in the original image (n_subvolumes, 3)
+    """
+    assert 0 <= overlap < 1, "Overlap must be between 0 and 1"
+    assert len(subvolume_size) == 3, "Subvolume size must be a list of 3 integers"
+    assert all([type(i) == int for i in subvolume_size]), "Subvolume size must be a list of 3 integers"
+    assert [subvolume_size[i] <= image.shape[i] for i in range(3)], "Subvolume size must be smaller than image size"
+
+    # determine number of subvolumes in each dimension. This crops the image to the nearest multiple of subvolume_size,
+    # after accounting for overlap
+    im_size = np.array(image.shape)
+    n_subvolumes = (im_size // ((1-overlap) * np.array(subvolume_size))).astype(int)
+    # regression will only work if there are more than 1 subvolume in each dimension
+    assert all(n_subvolumes > 1), "Subvolume size too large for image size. Reduce subvolume size or increase overlap"
+
+    # create an array of dimensions (n_subvolumes_z, n_subvolumes_y, n_subvolumes_x, size_z, size_y, size_x)
+    subvol_dims = np.array([n_subvolumes, subvolume_size]).flatten()
+    subvolumes = np.zeros(subvol_dims)
+    positions = np.zeros(np.concatenate([n_subvolumes, [3]]))
+    # populate the subvolumes array
+    for z, y, x in tqdm(np.ndindex(tuple(n_subvolumes)), desc="Splitting image into subvolumes"):
+        z_start, y_start, x_start = (np.array([z, y, x]) * (1-overlap) * np.array(subvolume_size)).astype(int)
+        z_end, y_end, x_end = z_start + subvolume_size[0], y_start + subvolume_size[1], x_start + subvolume_size[2]
+        z_centre, y_centre, x_centre = (z_start + z_end) // 2, (y_start + y_end) // 2, (x_start + x_end) // 2
+        subvolumes[z, y, x] = image[z_start:z_end, y_start:y_end, x_start:x_end]
+        positions[z, y, x] = np.array([z_centre, y_centre, x_centre])
+
+    return subvolumes, positions
 
 
 def merge_subvols(position, subvol):

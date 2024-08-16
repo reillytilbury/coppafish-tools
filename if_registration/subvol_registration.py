@@ -67,22 +67,39 @@ def find_z_tower_shifts(subvol_base, subvol_target, position, pearson_r_threshol
     z_box = subvol_base.shape[1]
     shift = np.zeros((z_subvolumes, 3))
     shift_corr = np.zeros(z_subvolumes)
+
+    # this is quite confusing, but what we do here is:
+    # 1. merge the target subvolumes in adjacent z-planes
+    # 2. create an image of the same shape for the base image, but only fill this with the current subvolume
+    # 3. window the whole target merged subvol from beginning to end in z
+    # 4. window the base 'merged' subvol from start of current subvolume to the end of current subvolume in z
     for z in range(z_subvolumes):
+        # find the start and end z indices of the subvolumes to merge
         z_start, z_end = int(max(0, z - z_neighbours)), int(min(z_subvolumes, z + z_neighbours + 1))
+        # merge the target subvolumes from z_start to z_end
         merged_subvol_target = preprocessing.merge_subvols(
             position=np.copy(position[z_start:z_end]), subvol=subvol_target[z_start:z_end]
         )
+        # initialise the base subvolume and the windowed base subvolume
         merged_subvol_base = np.zeros_like(merged_subvol_target)
+        # populate the merged subvol base image with just the current subvolume
+        relative_min_z = position[z, 0] - position[z_start, 0]
+        merged_subvol_base[relative_min_z: relative_min_z + z_box] = subvol_base[z]
+
+        # window the images (only windowing the nonzero subset of the base merged image)
         merged_subvol_base_windowed = np.zeros_like(merged_subvol_target)
-        merged_subvol_min_z = position[z_start, 0]
-        current_box_min_z = position[z, 0]
-        merged_subvol_start_z = current_box_min_z - merged_subvol_min_z
-        merged_subvol_base[merged_subvol_start_z : merged_subvol_start_z + z_box] = subvol_base[z]
-        # window the images
         merged_subvol_target_windowed = preprocessing.window_image(merged_subvol_target)
-        merged_subvol_base_windowed[merged_subvol_start_z : merged_subvol_start_z + z_box] = preprocessing.window_image(
+        merged_subvol_base_windowed[relative_min_z : relative_min_z + z_box] = preprocessing.window_image(
             subvol_base[z]
         )
+
+        # if one of these images is all zeros, we can't compute the shift, so skip
+        image_exists = np.max(merged_subvol_target) != 0 and np.max(merged_subvol_base) != 0
+        if not image_exists:
+            shift_corr[z] = 0
+            shift[z] = np.array([np.nan, np.nan, np.nan])
+            continue
+
         # Now we have the merged subvolumes, we can compute the shift
         shift[z], _, _ = skimage.registration.phase_cross_correlation(
             reference_image=merged_subvol_target_windowed,
