@@ -76,6 +76,9 @@ def merge_subvols(position, subvol):
     for i in range(position.shape[0]):
         subvol_i_pixel_ind = np.where(closest_centre == i)[0]
         subvol_i_pixel_coords_global = np.array([overlapping_pixels[j] for j in subvol_i_pixel_ind])
+        # if there are no overlapping pixels, skip
+        if len(subvol_i_pixel_coords_global) == 0:
+            continue
         subvol_i_pixel_coords_local = subvol_i_pixel_coords_global - position[i]
         z_global, y_global, x_global = subvol_i_pixel_coords_global.T
         z_local, y_local, x_local = subvol_i_pixel_coords_local.T
